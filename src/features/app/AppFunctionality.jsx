@@ -14,7 +14,7 @@ const defaultSettings = {
   textColor: "#ffffff",
   fontFamily: "Fira",
   fontSize: 16,
-  typingSpeed: 3,
+  typingSpeed: 7,
   frameRate: 30,
   duration: 10,
   playbackSpeed: 1,

@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from "react";
+import { tokenizeLine } from "../../utils/helper";
 
 export const useAnimationLogic = (settings, code) => {
   const [typedCode, setTypedCode] = useState("");
@@ -9,6 +10,9 @@ export const useAnimationLogic = (settings, code) => {
   const canvasRef = useRef(null);
   const mediaRecorderRef = useRef(null);
   const recordedChunksRef = useRef([]);
+  const audioCtxRef = useRef(null);
+  const audioDestRef = useRef(null);
+  const bgAudioRef = useRef(null);
 
   // Cursor Blinking Effect
   useEffect(() => {
@@ -41,23 +45,46 @@ export const useAnimationLogic = (settings, code) => {
       );
     } else {
       setIsAnimating(false);
-      mediaRecorderRef.current.stop();
+      stopRecording();
     }
   };
 
-  const playSound = (type) => {
+  // Play a sound through the shared AudioContext so it gets captured in the recording
+  const playSound = async (type) => {
     if (!settings.typingSounds && type === "typing") return;
     if (!settings.backgroundMusic && type === "background") return;
 
-    const sound = new Audio(
-      type === "typing" ? "/sounds/keypress.mp3" : "/sounds/background.mp3"
-    );
+    const audioCtx = audioCtxRef.current;
+    const dest = audioDestRef.current;
+    if (!audioCtx || !dest) return;
+
+    const url = type === "typing" ? "/sounds/keypress.mp3" : "/sounds/background.mp3";
+
+    const response = await fetch(url);
+    const arrayBuffer = await response.arrayBuffer();
+    const audioBuffer = await audioCtx.decodeAudioData(arrayBuffer);
+
+    const source = audioCtx.createBufferSource();
+    source.buffer = audioBuffer;
+    source.loop = type === "background";
+
+    // Connect to both the destination (for recording) and the speakers
+    source.connect(dest);
+    source.connect(audioCtx.destination);
+    source.start();
 
     if (type === "background") {
-      sound.loop = true;
+      bgAudioRef.current = source;
     }
+  };
 
-    sound.play();
+  const stopRecording = () => {
+    // Stop background music source node if playing
+    if (bgAudioRef.current) {
+      try { bgAudioRef.current.stop(); } catch (_) {}
+      bgAudioRef.current = null;
+    }
+    mediaRecorderRef.current?.stop();
   };
 
   const startAnimation = () => {
@@ -70,10 +97,22 @@ export const useAnimationLogic = (settings, code) => {
     canvas.width = settings.width;
     canvas.height = settings.height;
 
-    const stream = canvas.captureStream(
+    // --- Set up Web Audio routing ---
+    const audioCtx = new AudioContext();
+    const dest = audioCtx.createMediaStreamDestination();
+    audioCtxRef.current = audioCtx;
+    audioDestRef.current = dest;
+
+    // Merge canvas video track + audio track into one stream
+    const videoStream = canvas.captureStream(
       settings.frameRate * settings.playbackSpeed
     );
-    mediaRecorderRef.current = new MediaRecorder(stream, {
+    const combinedStream = new MediaStream([
+      ...videoStream.getVideoTracks(),
+      ...dest.stream.getAudioTracks(),
+    ]);
+
+    mediaRecorderRef.current = new MediaRecorder(combinedStream, {
       mimeType: settings.outputFormat === "MP4" ? "video/mp4" : "video/webm",
     });
     mediaRecorderRef.current.ondataavailable = (event) =>
@@ -91,7 +130,7 @@ export const useAnimationLogic = (settings, code) => {
         } else {
           clearInterval(animationRef.current);
           setIsAnimating(false);
-          mediaRecorderRef.current.stop();
+          stopRecording();
         }
       },
       1000 / settings.typingSpeed / settings.playbackSpeed
@@ -106,25 +145,40 @@ export const useAnimationLogic = (settings, code) => {
     ctx.font = `${settings.fontSize}px ${settings.fontFamily} monospace`;
 
     const lines = text.split("\n");
-    const maxLines = Math.floor(settings.height / (settings.fontSize * 1.5));
+    const maxLines = Math.floor((settings.height - 50) / (settings.fontSize * 1.5));
     const start = Math.max(0, lines.length - maxLines);
     const visibleLines = lines.slice(start);
 
     visibleLines.forEach((line, index) => {
       const yPos = 50 + index * (settings.fontSize * 1.5);
+      let xPos = 20;
+
       if (settings.lineNumbers) {
-        ctx.fillStyle = settings.textColor;
-        ctx.fillText(`${start + index + 1}. `, 5, yPos);
+        const lineNumText = `${start + index + 1}. `;
+        ctx.fillStyle = "#6272a4"; // muted color for line numbers
+        ctx.fillText(lineNumText, 5, yPos);
+        xPos = 10 + ctx.measureText(lineNumText).width;
       }
-      ctx.fillStyle = settings.textColor;
-      ctx.fillText(line, 20, yPos);
+
+      // Draw each syntax-highlighted token
+      const tokens = tokenizeLine(line);
+      tokens.forEach((token) => {
+        ctx.fillStyle = token.color;
+        ctx.fillText(token.text, xPos, yPos);
+        xPos += ctx.measureText(token.text).width;
+      });
     });
 
     if (showCursor) {
       const lastLine = visibleLines[visibleLines.length - 1] || "";
+      const lastLineNum = start + visibleLines.length;
+      const lineNumWidth = settings.lineNumbers
+        ? 10 + ctx.measureText(`${lastLineNum}. `).width
+        : 20;
+      ctx.fillStyle = settings.textColor;
       ctx.fillText(
         "|",
-        20 + ctx.measureText(lastLine).width,
+        lineNumWidth + ctx.measureText(lastLine).width,
         50 + (visibleLines.length - 1) * (settings.fontSize * 1.5)
       );
     }

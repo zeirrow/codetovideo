@@ -191,7 +191,7 @@ const VideoSettings = ({ settings, setSettings }) => {
                   type="range"
                   name="typingSpeed"
                   min="1"
-                  max="10"
+                  max="50"
                   step="0.5"
                   value={settings.typingSpeed}
                   onChange={handleChange}
